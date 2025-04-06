@@ -224,4 +224,14 @@ This project is licensed under the MIT License.
 
 If you encounter any issues or have questions, please:
 1. Check the [Issues](https://github.com/deepakness/mp3detective/issues) page
-2. Create a new issue if your problem isn't already reported 
+2. Create a new issue if your problem isn't already reported
+
+## Real-world Accuracy
+
+In testing with a collection of old Bollywood songs, the tool demonstrated approximately 95% accuracy:
+- For about 5% of the songs, either no metadata was found or incorrect information was provided
+- The accuracy may vary depending on the genre, age, and popularity of the songs
+- More mainstream and recent songs typically have higher accuracy rates
+- Consider reviewing the metadata for critical collections before applying changes
+
+Note: The tool's accuracy depends on the OpenAI model's knowledge and the clarity of the song's filename. Always verify the metadata for important music collections. 
