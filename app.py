@@ -32,6 +32,7 @@ OLLAMA_MODEL = "llama3.2"  # Change this to your preferred Ollama model
 BATCH_SIZE = 10
 RATE_LIMIT_DELAY = 1.0
 OVERWRITE = True
+INTERACTIVE_MODE = True  # Set to False to skip confirmation prompts
 
 class AudioMetadataGenerator:
     def __init__(self):
@@ -45,6 +46,7 @@ class AudioMetadataGenerator:
         self.batch_size = BATCH_SIZE
         self.rate_limit_delay = RATE_LIMIT_DELAY
         self.overwrite = OVERWRITE
+        self.interactive_mode = INTERACTIVE_MODE
         
         # Ensure folders exist
         if not self.input_folder.exists():
@@ -189,9 +191,102 @@ Song: "{song_name}" """
             logger.error(f"Error getting metadata for '{song_name}': {e}")
             return {"error": str(e), "title": song_name}
     
+    def display_metadata_comparison(self, filename, existing, new_metadata, file_type):
+        """Display a comparison of existing vs new metadata."""
+        print("\n" + "="*80)
+        print(f"FILE: {filename} ({file_type})")
+        print("="*80)
+        
+        # Map new metadata keys to display format
+        field_mapping = {
+            "title": ("Title", existing.get("title", ""), new_metadata.get("title", "")),
+            "artists": ("Artist", existing.get("artist", ""), new_metadata.get("artists", "")),
+            "album": ("Album", existing.get("album", ""), new_metadata.get("album", "")),
+            "year": ("Year", existing.get("year", ""), str(new_metadata.get("year", ""))),
+            "composer": ("Composer", existing.get("composer", ""), new_metadata.get("composer", "")),
+            "genre": ("Genre", existing.get("genre", ""), new_metadata.get("genre", "")),
+            "language": ("Language", existing.get("language", ""), new_metadata.get("language", ""))
+        }
+        
+        changes_found = False
+        
+        for field, (display_name, old_val, new_val) in field_mapping.items():
+            old_val = old_val or "(empty)"
+            new_val = new_val or "(empty)"
+            
+            if old_val != new_val:
+                changes_found = True
+                print(f"{display_name:12} | OLD: {old_val}")
+                print(f"{' '*12} | NEW: {new_val}")
+                print("-" * 50)
+            else:
+                print(f"{display_name:12} | {old_val} (no change)")
+        
+        # Show comments for MP3 files
+        if file_type == "MP3" and existing.get("comments"):
+            print(f"{'Comments':12} | {existing['comments']}")
+        
+        if not changes_found:
+            print("\nNO CHANGES DETECTED - All metadata matches existing values")
+        else:
+            print(f"\nCHANGES DETECTED for {filename}")
+        
+        print("="*80)
+
+    def confirm_update(self):
+        """Ask user for confirmation to proceed with the update."""
+        if not self.interactive_mode:
+            return True
+            
+        while True:
+            response = input("\nProceed with this update? (y/n/a=yes to all/q=quit): ").lower().strip()
+            if response in ['y', 'yes']:
+                return True
+            elif response in ['n', 'no']:
+                return False
+            elif response in ['a', 'all']:
+                self.interactive_mode = False  # Switch to non-interactive mode
+                return True
+            elif response in ['q', 'quit']:
+                print("Quitting...")
+                exit(0)
+            else:
+                print("Please enter 'y' (yes), 'n' (no), 'a' (yes to all), or 'q' (quit)")
+
+    def get_mp3_existing_metadata(self, file_path):
+        """Extract existing metadata from MP3 file."""
+        existing = {}
+        try:
+            audiofile = eyed3.load(str(file_path))
+            if audiofile and audiofile.tag:
+                existing = {
+                    "title": audiofile.tag.title or "",
+                    "artist": audiofile.tag.artist or "",
+                    "album": audiofile.tag.album or "",
+                    "year": str(audiofile.tag.recording_date) if audiofile.tag.recording_date else "",
+                    "composer": audiofile.tag.composer or "",
+                    "genre": str(audiofile.tag.genre) if audiofile.tag.genre else "",
+                    "comments": [str(comment) for comment in audiofile.tag.comments] if audiofile.tag.comments else []
+                }
+        except Exception as e:
+            logger.warning(f"Error reading existing MP3 metadata: {e}")
+        return existing
+
     def update_mp3_metadata(self, file_path, metadata):
         """Update the ID3 tags of an MP3 file with the provided metadata."""
         try:
+            # First, get existing metadata
+            existing_metadata = self.get_mp3_existing_metadata(file_path)
+            
+            # Show comparison
+            self.display_metadata_comparison(file_path.name, existing_metadata, metadata, "MP3")
+            
+            # Ask for confirmation
+            if not self.confirm_update():
+                logger.info(f"Skipping '{file_path.name}' - user declined update")
+                self.stats["skipped"] += 1
+                return False
+            
             output_path = str(self.output_folder / file_path.name)
             source_path = str(file_path)
             
@@ -254,9 +349,39 @@ Song: "{song_name}" """
             logger.error(f"Error updating MP3 metadata for '{file_path.name}': {str(e)}")
             return False
 
+    def get_opus_existing_metadata(self, file_path):
+        """Extract existing metadata from Opus file."""
+        existing = {}
+        try:
+            audiofile = OggOpus(str(file_path))
+            existing = {
+                "title": audiofile.get("TITLE", [""])[0],
+                "artist": audiofile.get("ARTIST", [""])[0],
+                "album": audiofile.get("ALBUM", [""])[0],
+                "year": audiofile.get("DATE", [""])[0],
+                "composer": audiofile.get("COMPOSER", [""])[0],
+                "genre": audiofile.get("GENRE", [""])[0],
+                "language": audiofile.get("LANGUAGE", [""])[0]
+            }
+        except Exception as e:
+            logger.warning(f"Error reading existing Opus metadata: {e}")
+        return existing
+
     def update_opus_metadata(self, file_path, metadata):
         """Update the metadata of an Opus file with the provided metadata."""
         try:
+            # First, get existing metadata
+            existing_metadata = self.get_opus_existing_metadata(file_path)
+            
+            # Show comparison
+            self.display_metadata_comparison(file_path.name, existing_metadata, metadata, "Opus")
+            
+            # Ask for confirmation
+            if not self.confirm_update():
+                logger.info(f"Skipping '{file_path.name}' - user declined update")
+                self.stats["skipped"] += 1
+                return False
+            
             output_path = str(self.output_folder / file_path.name)
             source_path = str(file_path)
             
