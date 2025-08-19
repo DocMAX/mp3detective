@@ -115,20 +115,36 @@ class AudioMetadataGenerator:
         name = re.sub(r'^\d+[\s_\-\.]+', '', name)  # Remove leading numbers with separators
         name = re.sub(r'^\[.*?\][\s_\-\.]*', '', name)  # Remove bracketed text at start
         
-        # Replace separators with spaces
-        name = re.sub(r'[_\-\.]+', ' ', name)
+        # Check if it's in "Artist - Title" format and preserve the structure for AI processing
+        # Don't strip the artist part here - let the AI handle the separation
         
-        # Remove extra spaces
+        # Replace underscores and dots with spaces, but keep dashes for "Artist - Title" detection
+        name = re.sub(r'[_\.]+', ' ', name)
+        
+        # Remove extra spaces but keep single dashes
         name = re.sub(r'\s+', ' ', name).strip()
         
         return name
     
-    def get_metadata_from_ollama(self, song_name):
+    def get_metadata_from_ollama(self, song_name, existing_metadata=None):
         """Query Ollama to get metadata for a song."""
-        prompt = f"""I need detailed metadata for the song titled "{song_name}". 
+        
+        # Create context about existing metadata
+        existing_context = ""
+        if existing_metadata:
+            non_empty_fields = {k: v for k, v in existing_metadata.items() if v and v != "(empty)"}
+            if non_empty_fields:
+                existing_context = f"\n\nExisting metadata in the file:\n{json.dumps(non_empty_fields, indent=2)}\nPlease use this existing information when it's correct, and only suggest changes when you can provide better/more accurate information."
+        
+        prompt = f"""I need detailed metadata for the song with filename "{song_name}". 
+
+IMPORTANT RULES:
+1. For the title field, provide ONLY the song title without artist names
+2. Do NOT include artist names in the title - keep them separate in the artists field
+3. If the filename contains "Artist - Song Title", extract just "Song Title" for the title field
 
 Please provide the following information in JSON format:
-- title: The full and correct title of the song
+- title: The song title ONLY (no artist names)
 - artists: The performers/singers of the song (as a comma-separated string)
 - album: The album name or compilation it's from
 - year: The release year (as a number)
@@ -141,7 +157,7 @@ Return ONLY a JSON object with these fields. If uncertain about any field, provi
 Example format:
 {{"title": "Yesterday", "artists": "The Beatles", "album": "Help!", "year": 1965, "composer": "John Lennon, Paul McCartney", "genre": "Rock", "language": "English"}}
 
-Song: "{song_name}" """
+Filename to analyze: "{song_name}"{existing_context}"""
         
         try:
             response = requests.post(
@@ -355,14 +371,18 @@ Song: "{song_name}" """
         try:
             audiofile = OggOpus(str(file_path))
             existing = {
-                "title": audiofile.get("TITLE", [""])[0],
-                "artist": audiofile.get("ARTIST", [""])[0],
-                "album": audiofile.get("ALBUM", [""])[0],
-                "year": audiofile.get("DATE", [""])[0],
-                "composer": audiofile.get("COMPOSER", [""])[0],
-                "genre": audiofile.get("GENRE", [""])[0],
-                "language": audiofile.get("LANGUAGE", [""])[0]
+                "title": audiofile.get("TITLE", [""])[0] if audiofile.get("TITLE") else "",
+                "artist": audiofile.get("ARTIST", [""])[0] if audiofile.get("ARTIST") else "",
+                "album": audiofile.get("ALBUM", [""])[0] if audiofile.get("ALBUM") else "",
+                "year": audiofile.get("DATE", [""])[0] if audiofile.get("DATE") else "",
+                "composer": audiofile.get("COMPOSER", [""])[0] if audiofile.get("COMPOSER") else "",
+                "genre": audiofile.get("GENRE", [""])[0] if audiofile.get("GENRE") else "",
+                "language": audiofile.get("LANGUAGE", [""])[0] if audiofile.get("LANGUAGE") else ""
             }
+            
+            # Debug: Show all available tags
+            logger.debug(f"All Opus tags for {file_path.name}: {dict(audiofile)}")
+            
         except Exception as e:
             logger.warning(f"Error reading existing Opus metadata: {e}")
         return existing
@@ -466,8 +486,14 @@ Song: "{song_name}" """
                 file_type = file_path.suffix.upper()
                 logger.info(f"Processing ({i+1}/{len(audio_files)}) {file_type}: '{song_name}'")
                 
-                # Get metadata from Ollama
-                metadata = self.get_metadata_from_ollama(song_name)
+                # Get existing metadata first
+                if file_path.suffix.lower() == ".mp3":
+                    existing_metadata = self.get_mp3_existing_metadata(file_path)
+                else:
+                    existing_metadata = self.get_opus_existing_metadata(file_path)
+                
+                # Get metadata from Ollama with context about existing metadata
+                metadata = self.get_metadata_from_ollama(song_name, existing_metadata)
                 
                 # Update audio file with metadata
                 success = self.update_audio_metadata(file_path, metadata)
